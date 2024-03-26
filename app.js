@@ -22,3 +22,48 @@ app.use(function(req, res, next) {
     res.setHeader("X-CSE356", process.env.HEADER)
     next()
 });
+
+app.get('/tiles/:layer/:v/:h.png', (req, res) => {
+    const { layer, v, h } = req.params;
+
+    res.send(`Requested map tile for layer ${layer}, v ${v}, h ${h}`);
+});
+
+app.post('/api/search', (req, res) => {
+    const { bbox, onlyInBox, searchTerm } = req.body;
+
+    /*
+    Request Body (JSON):
+    {
+    "bbox": {
+        "minLat": number,
+        "minLon": number,
+        "maxLat": number,
+        "maxLon": number
+    },
+    "onlyInBox": boolean,
+    "searchTerm": string
+    }
+    */
+
+    const searchResult = []; 
+    res.json(searchResult);
+});
+
+function secant(x) {return 1/Math.cos(x)}
+
+// Convert Endpoint
+app.post('/convert', (req, res) => {
+    const { lat, long, zoom } = req.body;
+
+    //https://gis.stackexchange.com/questions/133205/wmts-convert-geolocation-lat-long-to-tile-index-at-a-given-zoom-level
+    let n = Math.pow(2, zoom)
+    const xTile = n * Math.floor((long + 180) / 360);
+    const yTile = n * Math.floor((1 - Math.log(Math.tan(lat * Math.PI / 180) + secant(lat * Math.PI / 180)) / Math.PI) / 2);
+    res.json({ x_tile: xTile, y_tile: yTile });
+  });
+  
+
+app.listen(port, ipAddress, () => {
+    console.log(`App listening at http://localhost:${port}`)
+});

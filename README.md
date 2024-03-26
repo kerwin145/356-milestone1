@@ -11,7 +11,7 @@ sudo apt install npm
 ```
 
 ## Install packages
-```npm install``
+```npm install```
 
 ## Download pfb map data file
 ```wget https://grading.cse356.compas.cs.stonybrook.edu/data/new-york.osm.pbf ```
