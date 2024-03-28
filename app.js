@@ -1,6 +1,6 @@
 /**
  * What has been done so far:
- * Node installed, postgis database made, called osm_db (instead of ny_db)
+ * Node installed, postgis database made, called osm_db
  * 
  */
 

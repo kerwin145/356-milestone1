@@ -11,6 +11,7 @@ sudo apt install npm
 ```
 
 ## Install packages
+After cloning the project, run
 ```npm install```
 
 ## Download pfb map data file
@@ -35,12 +36,19 @@ CREATE EXTENSION postgis;
 ##Import data
 #Note, installing osm2pgsql may need postgres password, so we have to change the postgres pg_hba.conf in etc/postgresql/14 to trust local
 sudo apt install osm2pgsql
-osm2pgsql -d osm_db -H 209.94.57.33 new-york.osm.pbf
+
+osm2pgsql -d osm_db -H 209.94.57.33 -U <username> -W -r pbf new-york.osm.pbf
 
 ```
+And then...find a way to somehow quit the postgres terminal
 
-## More up 
+## More setup
 To allow connections to this server in the future (if we wish to scale out), we need to modify the postgresql.conf with the following changes:
 ```listen_addresses = '*'```
 We also need to again, modify pg_hba.conf to allow remote connections with:
-```host    all             all             0.0.0.0/0            md5```
+```
+host    all             all             0.0.0.0/0            md5
+host    all             all             ::/0                    md5
+```
+
+where first line is for ipv4, and second is for ipv6.
