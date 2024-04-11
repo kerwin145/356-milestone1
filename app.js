@@ -1,12 +1,21 @@
+/**
+ * If server is restarted, run these commands:
+ * 
+    ip6tables -I OUTPUT -p tcp -m tcp --dport 25 -j DROP
+    iptables -t nat -I OUTPUT -o eth0 -p tcp -m tcp --dport 25 -j DNAT --to-destination 130.245.171.151:11587
+
+ */
+
 //imports
 const redis = require('redis');
 const express = require('express')
+const session = require('express-session');
 const bodyParser = require('body-parser')
 const { Pool } = require('pg'); //he PostgreSQL client for Node.js
 const path = require('path');
 const request = require('request');
 const nodemailer = require('nodemailer')
-
+const { promisify } = require('util');
 
 require('dotenv').config();
 
@@ -15,17 +24,17 @@ const app = express()
 const port = 80
 const ipAddress = '0.0.0.0'
 const redisClient = redis.createClient({
-  host: 'localhost',
-  port: 6379
-});
+  host: 'localhost',  
+  port: 6379,         
+  password: 'redispass12345689987654321qwertyuiop'
+})
 
-// const pool = new Pool({
-//     user: 'postgres',
-//     host: '209.94.58.52',
-//     database: 'osm_db',
-//     password: 'pass',
-//     port: 5432,
-//   });
+const redisGet = promisify(redisClient.get).bind(redisClient);
+const redisSet = promisify(redisClient.set).bind(redisClient);
+const redisDel = promisify(redisClient.del).bind(redisClient);
+const redisHGet= promisify(redisClient.hmget).bind(redisClient);
+const redisHSet = promisify(redisClient.hset).bind(redisClient);
+const redisExists = promisify(redisClient.exists).bind(redisClient);
 
 const pool = new Pool({
     user: 'renderer',
@@ -48,6 +57,12 @@ const transporter = nodemailer.createTransport({
 //middleware
 app.use(bodyParser.json())
 
+app.use(session({
+  secret: 'mm_supersecretkey', 
+  resave: false,
+  saveUninitialized: true
+}));
+
 app.use(function(req, res, next) {
   console.log("================DEBUGGING REQUESTS================")
   console.log("\n\n___________QUERY___________")
@@ -62,97 +77,140 @@ app.use(function(req, res, next) {
 app.use(express.static(path.join(__dirname, 'frontend/build')));
 
 app.get('/tiles/:layer/:v/:h.png', (req, res) => {
-    const { layer, v, h } = req.params;
-    request(`http://209.151.152.129:8080/tile/${layer}/${v}/${h}.png`).pipe(res);
-    //res.send(`Requested map tile for layer ${layer}, v ${v}, h ${h}`);
+  console.log("tiles")
+  const { layer, v, h } = req.params;
+  // res.contentType('image/png');
+  request(`http://209.151.152.129:8080/tile/${layer}/${v}/${h}.png`).pipe(res);
+  //res.send(`Requested map tile for layer ${layer}, v ${v}, h ${h}`);
 });
 
+app.get('/turn/:TL/:BR.png', (req, res) => {
+  console.log("turn")
+  //const { layer, v, h } = req.params;
+  const { TL, BR } = req.params;
+  const tlsplit = TL.split(',');
+  const brsplit = BR.split(',');
+  console.log("tlsplit: " + tlsplit);
+  console.log("brsplit: " + brsplit);
+  const minlong = parseFloat(tlsplit[1]);
+  const maxlat = parseFloat(tlsplit[0]);
+  const maxlong = parseFloat(brsplit[1]);
+  const minlat = parseFloat(brsplit[0]);
+  console.log(`minlong ${minlong} maxlong ${maxlong} minlat ${minlat} maxlat ${maxlat}`);
+  res.contentType('image/png');
+  request(`http://209.151.152.129:1234/?minlong=${minlong}&minlat=${minlat}&maxlong=${maxlong}&maxlat=${maxlat}`).pipe(res);
+});
 
 app.post('/api/adduser', async (req, res) => {
-  let {username, password, email} = req.body
+  console.log("adduser")
+  const { username, password, email } = req.body;
+  console.log(req.body)
 
-  if(!username || !password || !email){
-      return res.json({msg: "Request body doesn't have necessary information", status: "ERROR"})
+  // for testing ONLY
+  // await redisDel(`email:${email}`)
+  // await redisDel(`username:${username}`, email)
+
+  if (!username || !password || !email) {
+    return res.json({ msg: "Request body doesn't have necessary information", status: "err" });
   }
- 
-  const encodedEmail = encodeURIComponent(email)
-  let key = "some_super_random_and_totally_secret_key"
-  let verificationLink = `http://${process.env.HOST}/verify?email=${encodedEmail}&key=${key}`
+
+  const encodedEmail = encodeURIComponent(email);
+  const key = "some_super_random_and_totally_secret_key";
+  const verificationLink = `http://${process.env.HOST}/api/verify?email=${encodedEmail}&key=${key}`;
 
   const mailOptions = {
-      from: 'Hello World <test@cse356.compas.cs.stonybrook.edu.com>',
-      to: email, // Recipient's email
-      subject: 'Registration Confirmation',
-      text: `Hello ${username}. You email has been created and requires activation. please click this link: ${verificationLink} to activate your email. If this was not done by you, you can safely ignore this email. `,
+    from: 'Hello World <test@cse356.compas.cs.stonybrook.edu.com>',
+    to: email, // Recipient's email
+    subject: 'Registration Confirmation',
+    text: `Hello ${username}. You email has been created and requires activation. please click this link: ${verificationLink} to activate your email. If this was not done by you, you can safely ignore this email. `,
   };
 
   try {
-      await transporter.sendMail(mailOptions)
-      const userExists = await redisClient.exists(`email:${email}`);
-      if (userExists) {
-        return res.json({ msg: "User already exists but okay", status: 'HMMMMM user already exists' });
-      }
-    
-      // Store user data in Redis
-      redisClient.hSet(`email:${email}`, 'password', password, 'user', username, 'verified', false, 'verificationKey', key);   
+    const userEmailExists = await redisExists(`email:${email}`);
+    const userUsernameExists = await redisExists(`username:${username}`);
+    if (userEmailExists || userUsernameExists) {
+      return res.status(200).json({ msg: "User already exists", status: 'err' });
+    }
 
-      return res.json({msg: 'User registered and email sent', status: "OK"})
+    // Send email
+    await transporter.sendMail(mailOptions);
+
+    // Store user data in Redis
+    await redisHSet(`email:${email}`, 'password', password, 'user', username, 'verified', false, 'verificationKey', key);
+    // Map username to email
+    await redisSet(`username:${username}`, email);
+
+    return res.json({ msg: 'User registered and email sent', status: "OK" });
   } catch (err) {
-      console.error(err);
-      return res.json({msg: 'Error sending email', status: "HMM"})
+    console.error(err);
+    return res.status(500).json({ msg: 'Error sending email', status: "ERROR", err });
   }    
-})
+});
+
 
 app.get('/api/verify', async (req, res) => {
+  console.log("verify")
   const { email, key } = req.query;
+  console.log(req.body)
   if(!email || !key){
     return res.json({msg: "Not enough parameters", status: "ERROR"})
-}
+  }
   console.log("verify: " + email + ", " + key);
-  const userExists = await redisClient.exists(`email:${email}`);
+  const userExists = await redisExists(`email:${email}`);
   if(!userExists){
-    return res.json({ msg: "User doesn't exist", status: 'HMMMMM user doesn\'t exist' });
+    return res.status(400).json({ msg: "User doesn't exist", status: 'HMMMMM user doesn\'t exist' });
   }
 
-  const userData = await redisClient.hGetAll(`${email}`)
-
-  if(key != userData.verificationKey){
-    return res.json({msg: "Incorrect verification key", status: "ERROR"})
+  //could also check to prevent redundant verifications but whatever
+  
+  const verifKey = await redisHGet(`email:${email}`, "verificationKey")
+  console.log(`Correct key: ${verifKey}, entered key: ${key}, match? ${verifKey == key}`)
+  if(!verifKey || verifKey != key){
+    return res.status(200).json({msg: "Incorrect verification key", status: "ERROR"})
   }
 
-  await redisClient.hSet(`email${email}`, 'verified', true)
+  await redisHSet(`email:${email}`, 'verified', true)
 
-  return res.status(403).json({msg: "Key incorrect", status: "ERROR"})
+  return res.json({msg: "Verified", status: "OK"})
 })
 
 app.post('/api/login', async (req, res) => {
+  console.log("login")
   const { username, password } = req.body;
+  console.log(req.body)
   // Retrieve user data from Redis
-  const userData = await redisClient.hGetAll(`user:${username}`);
-  if(!(userData && userData.verified)){
-    res.status(401).json({ error: 'NOT VERIFIED HMMMMMMM', status: "OK"});
+  const chkEmail = await redisGet(`username:${username}`)
+  console.log(chkEmail)
+  if(!chkEmail){
+    return res.status(200).json({error: "NOT EXIST?", status: "err"})
   }
-  if (userData && userData.password === password) {
-    // Set session data in Redis
-    await redisClient.set(`session:${req.sessionID}`, username);
-    res.json({ status: 'ok' });
-  } else {
-    res.status(401).json({ error: 'Invalid username or password' });
+
+  const [chkpass, verified] = await redisHGet(`email:${chkEmail}`, "password", "verified"); 
+  if(verified === "false"){
+    return res.status(200).json({ error: 'NOT VERIFIED HMMMMMMM', status: "err"});
   }
+  if (chkpass != password) {
+    return res.status(200).json({ error: 'Invalid username or password' , status: "err"});
+  } 
+
+  await redisSet(`session:${req.sessionID}`, username);
+  res.json({ status: 'ok' });
 });
 
 app.post('/api/logout', async (req, res) => {
+  console.log("logout")
   try{
-    await client.del(`session:${req.sessionID}`);
+    await redisDel(`session:${req.sessionID}`);
     res.json({ status: 'ok' });
   } catch (err) {
     console.error(err);
-    return res.json({msg: 'Error loggin out', status: "log out HMM"})
+    return res.status(500).json({msg: 'Error loggin out', status: "log out HMM"})
   }
 });
 
-app.get('/api/user', async (req, res) => {
-  const username = await client.get(`session:${req.sessionID}`);
+app.post('/api/user', async (req, res) => {
+  console.log("user")
+  const username = await redisGet(`session:${req.sessionID}`);
   if(username){
     return res.json({ loggedin: true, username });
   }else{
@@ -196,10 +254,10 @@ app.post('/api/search', async (req, res) => {
         $6 = false OR
         ST_Contains(ST_MakeEnvelope(min_lon, min_lat, max_lon, max_lat, 4326), ST_Transform(way, 4326))
       )
-    ORDER BY
-      ST_Distance(ST_Transform(way, 4326), ST_Centroid(ST_MakeEnvelope(min_lon, min_lat, max_lon, max_lat, 4326))) ASC;
+   
       `; 
-
+ // ORDER BY
+    //   ST_Distance(ST_Transform(way, 4326), ST_Centroid(ST_MakeEnvelope(min_lon, min_lat, max_lon, max_lat, 4326))) ASC;
     const result = await pool.query(query, [
       minLon,
       minLat,
@@ -250,15 +308,100 @@ app.post('/convert', (req, res) => {
 });
 
 app.post('/api/route', async (req, res) => {
-  const { source, destination } = req.body;
+  try {
+    const username = await redisGet(`session:${req.sessionID}`);
+    if (!username) {
+      return res.status(401).json({ error: 'Unauthorized. Please login first.' });
+    }
 
-  const username = await redisClient.get(`session:${req.sessionID}`);
-  if (!username) {
-      return res.status(401).json({ error: 'User not logged in' });
+    const { source, destination } = req.body;
+
+    if (!source || !destination || !source.lat || !source.lon || !destination.lat || !destination.lon) {
+      return res.status(400).json({ error: 'Invalid request. Missing source or destination coordinates.' });
+    }
+
+    const url = `http://209.151.152.129:5000/route/v1/driving/${source.lon},${source.lat};${destination.lon},${destination.lat}?steps=true`;
+
+    request(url, { json: true }, (error, response, body) => {
+      if (error) {
+        console.error('Error:', error);
+        return res.status(500).json({ error: 'An error occurred while fetching the route.' });
+      }
+
+      if (response.statusCode !== 200) {
+        console.error('OSRM API Error:', body);
+        return res.status(500).json({ error: 'An error occurred while fetching the route.' });
+      }
+
+      console.log(JSON.stringify(body.routes[0].legs[0].steps, null, 2));
+
+      const route = body.routes[0];
+      const steps = route.legs[0].steps;
+
+      const formattedSteps = steps.map((step) => {
+
+        let description = step.name ? `On ${step.name}` : 'Continue';
+        
+        if (step.maneuver) {
+          switch (step.maneuver.type) {
+            case 'merge':
+              description += ` and merge ${step.maneuver.modifier}`;
+              break;
+            case 'off ramp':
+              description += ` and take the off-ramp ${step.maneuver.modifier}`;
+              break;
+            case 'fork':
+              description += ` and take the fork ${step.maneuver.modifier}`;
+              break;
+            case 'turn':
+              description += ` and turn ${step.maneuver.modifier}`;
+              break;
+            case 'new name':
+              description += ` and continue onto ${step.name}`;
+              break;
+            default:
+              description += ` and continue ${step.maneuver.modifier}`;
+          }
+        }
+        if (step.exits) {
+          description += ` towards exit ${step.exits}`;
+        }
+
+        return {
+          description,
+          coordinates: {
+            lat: step.maneuver.location[1],
+            lon: step.maneuver.location[0],
+          },
+          distance: step.distance,
+        };
+      });
+      // res.setHeader('Content-Type', 'application/json');
+      // res.status(200).send(JSON.stringify(formattedSteps));
+
+      res.json(formattedSteps);
+    });
+  } catch (error) {
+    console.error('Error:', error);
+    res.status(500).json({ error: 'An internal server error occurred' });
   }
+});
 
-  
+app.get('/turn/:TL/:BR.png', async (req, res) => {
+  try {
+    // Extract coordinates from request parameters
+    const { TL, BR } = req.params;
+    const [TL_lat, TL_lon] = TL.split(',');
+    const [BR_lat, BR_lon] = BR.split(',');
 
+    // const url = `http://209.151.152.129:1234/?/${source.lon},${source.lat};${destination.lon},${destination.lat}?steps=true`;
+
+
+    return res.status(200).json({msg: "This is tepmorary"})
+  }catch (error) {
+    console.error('Error:', error);
+    res.status(500).json({ error: 'An internal server error occurred' });
+  }
 })
 
 app.get('*', (req, res) => {

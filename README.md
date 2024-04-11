@@ -7,15 +7,19 @@ There is a docker image
 
 # Setting up node
 sudo apt-get update
-sudo apt install nodejs
-sudo apt install npm 
+sudo apt install -y nodejs
+sudo apt install -y npm 
 
 # Redis 
 This is for user account data storage 
 
 sudo apt install -y redis-server
-sudo sed -i "s/# requirepass foobared/requirepass redis_pass/" /etc/redis/redis.conf
-g
+sudo sed -i "s/# requirepass foobared/requirepass 'redis_pass'/" /etc/redis/redis.conf
+
+# Setup a postfix server for mail
+
+Made in collaboration with Tristan Lonsway and Devin Lin
+
 <!-- 
 Download steps is taken from the install website:
 curl -fsSL https://packages.redis.io/gpg | sudo gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
