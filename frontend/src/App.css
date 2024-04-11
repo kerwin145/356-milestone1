@@ -1,0 +1,14 @@
+.App {
+  text-align: center;
+  display: flex;
+}
+
+.menu-panel{
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.map{
+  flex: 4;
+}

@@ -1,54 +1,24 @@
-i cri
+# SETUP
+In case in the future, we need to scale out
 
-# Setup
+# Tile server and post gis
+There is a docker image
+```docker run -p 8080:80 -p 5432:5432 -v osm-data:/data/database/ -d overv/openstreetmap-tile-server run```
 
-## setting up node
-```
+# Setting up node
 sudo apt-get update
 sudo apt install nodejs
 sudo apt install npm 
 
-```
+# Redis 
+This is for user account data storage 
 
-## Install packages
-After cloning the project, run
-```npm install```
-
-## Download pfb map data file
-```wget https://grading.cse356.compas.cs.stonybrook.edu/data/new-york.osm.pbf ```
-
-## Installing PostgreSQL and PostGIS, and importing data
-```
-#installing PostgreSQL#
-sudo apt install postgresql postgresql-contrib postgis
-
-#switch to postgres user#
-sudo -i -u postgres
-#start PostgreSQL CLI and create db
-psql
-CREATE DATABASE osm_db;
-
-#connect, create extension, and quit#
-\c osm_db
-CREATE EXTENSION postgis;
-\q
-
-##Import data
-#Note, installing osm2pgsql may need postgres password, so we have to change the postgres pg_hba.conf in etc/postgresql/14 to trust local
-sudo apt install osm2pgsql
-
-osm2pgsql -d osm_db -H 209.94.57.33 -U <username> -W -r pbf new-york.osm.pbf
-
-```
-And then...find a way to somehow quit the postgres terminal
-
-## More setup
-To allow connections to this server in the future (if we wish to scale out), we need to modify the postgresql.conf with the following changes:
-```listen_addresses = '*'```
-We also need to again, modify pg_hba.conf to allow remote connections with:
-```
-host    all             all             0.0.0.0/0            md5
-host    all             all             ::/0                    md5
-```
-
-where first line is for ipv4, and second is for ipv6.
+sudo apt install -y redis-server
+sudo sed -i "s/# requirepass foobared/requirepass redis_pass/" /etc/redis/redis.conf
+g
+<!-- 
+Download steps is taken from the install website:
+curl -fsSL https://packages.redis.io/gpg | sudo gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/redis.list
+sudo apt-get update
+sudo apt-get install redis -->
