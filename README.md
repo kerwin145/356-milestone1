@@ -16,6 +16,13 @@ This is for user account data storage
 sudo apt install -y redis-server
 sudo sed -i "s/# requirepass foobared/requirepass 'redis_pass'/" /etc/redis/redis.conf
 
+
+# Nginx
+Used for load balancing
+
+# Memcached 
+
+
 # Setup a postfix server for mail
 
 Made in collaboration with Tristan Lonsway and Devin Lin

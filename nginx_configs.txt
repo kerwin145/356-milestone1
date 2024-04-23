@@ -1,0 +1,103 @@
+========================================== nginx.conf ============================================
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+include /etc/nginx/modules-enabled/*.conf;
+
+events {
+	worker_connections 768;
+	# multi_accept on;
+}
+
+http {
+
+	##
+	# Basic Settings
+	##
+
+	sendfile on;
+	tcp_nopush on;
+	types_hash_max_size 2048; 
+ 
+	include /etc/nginx/mime.types;
+	default_type application/octet-stream;
+
+
+	# Load balancing
+	upstream postgis_5431 {
+		server 209.151.152.129:5431;
+		server 209.94.56.177:5431;
+		server 209.151.151.76:5431;
+		server 209.151.155.249:5431;
+    }
+
+    upstream tile_8080{
+		server 209.151.152.129:8080;
+		server 209.94.56.177:8080;
+		server 209.151.151.76:8080;
+		server 209.151.155.249:8080;    
+	}
+
+    upstream turn_1234{
+		server 209.151.152.129:1234;
+		# server 209.94.56.177:1234;
+		# server 209.151.151.76:1234;
+		# server 209.151.155.249:1234;        
+	}
+
+    upstream route_5000{
+		server 209.151.152.129:5000;
+		# server 209.94.56.177:5000;
+		# server 209.151.151.76:5000;
+		# server 209.151.155.249:5000;    
+    }
+
+	##
+	# Logging Settings
+	##
+
+	access_log /var/log/nginx/access.log;
+	error_log /var/log/nginx/error.log;
+
+	include /etc/nginx/conf.d/*.conf;
+	include /etc/nginx/sites-enabled/*;
+}
+
+========================================== routing.conf ============================================
+
+server {
+    listen 8080;
+
+    location /postgis/ {
+        # The last slash is essential here
+        proxy_pass http://postgis_5431/;
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+        proxy_next_upstream error timeout http_500 http_502 http_503 http_504;
+    }
+
+    location /tile/ {
+        proxy_pass http://tile_8080;
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+        proxy_next_upstream error timeout http_500 http_502 http_503 http_504;
+    }
+
+    location /turn/ {
+        proxy_pass http://turn_1234;
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+        proxy_next_upstream error timeout http_500 http_502 http_503 http_504;
+    }
+
+    location /route/ {
+        proxy_pass http://route_5000;
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+        proxy_next_upstream error timeout http_500 http_502 http_503 http_504;
+    }
+}

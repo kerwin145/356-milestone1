@@ -1,3 +1,5 @@
 node_modules
 new-york.osm.pbf
 frontend/node_modules
+node_out
+app.js.swp

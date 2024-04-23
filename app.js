@@ -3,7 +3,6 @@
  * 
     ip6tables -I OUTPUT -p tcp -m tcp --dport 25 -j DROP
     iptables -t nat -I OUTPUT -o eth0 -p tcp -m tcp --dport 25 -j DNAT --to-destination 130.245.171.151:11587
-
  */
 
 //imports
@@ -15,14 +14,14 @@ const { Pool } = require('pg'); //he PostgreSQL client for Node.js
 const path = require('path');
 const request = require('request');
 const nodemailer = require('nodemailer')
+const Memcached = require('memcached');
 const { promisify } = require('util');
-
 require('dotenv').config();
-
 //setup
 const app = express()
 const port = 80
 const ipAddress = '0.0.0.0'
+const NGINX_URL = 'http://localhost:8080'
 const redisClient = redis.createClient({
   host: 'localhost',  
   port: 6379,         
@@ -54,6 +53,8 @@ const transporter = nodemailer.createTransport({
     }
 });
 
+const memcached = new Memcached('localhost:11211');
+
 //middleware
 app.use(bodyParser.json())
 
@@ -63,43 +64,40 @@ app.use(session({
   saveUninitialized: true
 }));
 
-app.use(function(req, res, next) {
-  console.log("================DEBUGGING REQUESTS================")
-  console.log("\n\n___________QUERY___________")
-  console.log(req.query)
-  console.log("\n\n___________BODY___________")
-  console.log(req.body)
-  console.log("==================================================")
-  res.setHeader("x-CSE356", process.env.HEADER);
-  next();
-});
- 
+// //TODO: Remove this middleware when testing as logging can really slow things down
+ app.use(function(req, res, next) {
+//   console.log("================DEBUGGING REQUESTS================")
+//   console.log("\n\n__________URL_____________")
+   console.log("\n\n" + req.protocol + '://' + req.get('host') + req.originalUrl)
+//   console.log("\n\n___________QUERY___________")
+//   console.log(req.query)
+//   console.log("\n\n___________BODY___________")
+//   console.log(req.body)
+//   console.log("==================================================")
+   res.setHeader("x-CSE356", process.env.HEADER);
+   next();
+ });
+
+function cacheMiddleware(req, res, next) {
+  const key = req.originalUrl;
+
+  memcached.get(key, function (err, data) {
+    if (err) {
+      console.error(err);
+      return res.status(500).send('Internal Server Error');
+    }
+
+    if (data) {
+      // console.log('Cache hit for:', key);
+      res.contentType('image/png').send(data);
+    } else {
+      // console.log('Cache miss for:', key);
+      next(); // Continue to the next middleware
+    }
+  });
+}
+
 app.use(express.static(path.join(__dirname, 'frontend/build')));
-
-app.get('/tiles/:layer/:v/:h.png', (req, res) => {
-  console.log("tiles")
-  const { layer, v, h } = req.params;
-  // res.contentType('image/png');
-  request(`http://209.151.152.129:8080/tile/${layer}/${v}/${h}.png`).pipe(res);
-  //res.send(`Requested map tile for layer ${layer}, v ${v}, h ${h}`);
-});
-
-app.get('/turn/:TL/:BR.png', (req, res) => {
-  console.log("turn")
-  //const { layer, v, h } = req.params;
-  const { TL, BR } = req.params;
-  const tlsplit = TL.split(',');
-  const brsplit = BR.split(',');
-  console.log("tlsplit: " + tlsplit);
-  console.log("brsplit: " + brsplit);
-  const minlong = parseFloat(tlsplit[1]);
-  const maxlat = parseFloat(tlsplit[0]);
-  const maxlong = parseFloat(brsplit[1]);
-  const minlat = parseFloat(brsplit[0]);
-  console.log(`minlong ${minlong} maxlong ${maxlong} minlat ${minlat} maxlat ${maxlat}`);
-  res.contentType('image/png');
-  request(`http://209.151.152.129:1234/?minlong=${minlong}&minlat=${minlat}&maxlong=${maxlong}&maxlat=${maxlat}`).pipe(res);
-});
 
 app.post('/api/adduser', async (req, res) => {
   console.log("adduser")
@@ -147,7 +145,6 @@ app.post('/api/adduser', async (req, res) => {
   }    
 });
 
-
 app.get('/api/verify', async (req, res) => {
   console.log("verify")
   const { email, key } = req.query;
@@ -170,7 +167,6 @@ app.get('/api/verify', async (req, res) => {
   }
 
   await redisHSet(`email:${email}`, 'verified', true)
-
   return res.json({msg: "Verified", status: "OK"})
 })
 
@@ -224,13 +220,177 @@ planet_osm_line
 planet_osm_polygon
 planet_osm_roads
 */
+function handleImageResponseAndCache(response, key, res) {
+  // console.log("handling image response and cache")
+  if (response.statusCode === 200) {
+    let imageData = Buffer.from('');
+    response.on('data', (chunk) => {
+      imageData = Buffer.concat([imageData, chunk]);
+    });
+    response.on('end', () => {
+      memcached.set(key, imageData, 60, (err) => {  // Cache for 6t0 seconds
+        if(err) console.error(err);
+      });
+      res.contentType('image/png').send(imageData);
+    });
+  } else {
+    res.status(response.statusCode).send(response.statusMessage);
+  }
+}
+
+app.get('/tiles/:layer/:v/:h.png', cacheMiddleware, (req, res) => {
+  // console.log("TILE ROUTE")
+  const { layer, v, h } = req.params;
+  const key = `/tiles/${layer}/${v}/${h}.png`;
+
+  request(`${NGINX_URL}/tile/${layer}/${v}/${h}.png`).on('response', (response) => {
+    handleImageResponseAndCache(response, key, res);
+  });
+  // request(`${NGINX_URL}/tile/${layer}/${v}/${h}.png`).pipe(res);
+})
+
+app.get('/turn/:TL/:BR.png', cacheMiddleware, async (req, res) => {
+  const { TL, BR } = req.params;
+  const tlsplit = TL.split(',');
+  const brsplit = BR.split(',');
+  // console.log("tlsplit: " + tlsplit);
+  // console.log("brsplit: " + brsplit);
+  const minlong = parseFloat(tlsplit[1]);
+  const maxlat = parseFloat(tlsplit[0]);
+  const maxlong = parseFloat(brsplit[1]);
+  const minlat = parseFloat(brsplit[0]);
+  console.log(`minlong ${minlong} maxlong ${maxlong} minlat ${minlat} maxlat ${maxlat}`);
+  const key = `/turn/${minlong}_${maxlat}_${maxlong}_${minlat}.png`;
+
+  /*request(`${NGINX_URL}/turn/?minlong=${minlong}&minlat=${minlat}&maxlong=${maxlong}&maxlat=${maxlat}`)
+    .on('response', (response) => {
+      handleImageResponseAndCache(response, key, res);
+  });*/
+  request(`http://209.151.152.129:1234?minlong=${minlong}&minlat=${minlat}&maxlong=${maxlong}&maxlat=${maxlat}`).pipe(res);
+
+}); 
+app.post('/api/route', async (req, res) => {
+  try {
+    const { source, destination } = req.body;
+
+    if (!source || !destination || !source.lat || !source.lon || !destination.lat || !destination.lon) {
+      return res.status(400).json({ error: 'Invalid request. Missing source or destination coordinates.' });
+    }
+
+    const cacheKey = `/api/route/${source.lat}_${source.lon}_${destination.lat}_${destination.lon}`;
+    memcached.get(cacheKey, function (err, data) {
+
+      if (data) {
+        res.json(data);
+      } else {
+        const url = `http://209.151.152.129:5000/route/v1/driving/${source.lon},${source.lat};${destination.lon},${destination.lat}?steps=true`;
+        //TODO: replace above with below when load balancing is done
+        // const url = `${NGINX_URL}/route/v1/driving/${source.lon},${source.lat};${destination.lon},${destination.lat}?steps=true`;
+        request(url, { json: true }, (error, response, body) => {
+          if (error) {
+            console.error('Error:', error);
+            return res.status(500).json({ error: 'An error occurred while fetching the route.' });
+          }
+
+          if (response.statusCode !== 200) {
+            console.error('OSRM API Error:', body);
+            return res.status(500).json({ error: 'An error occurred while fetching the route.' });
+          }
+
+          const route = body.routes[0];
+          const steps = route.legs[0].steps;
+          const formattedSteps = steps.map((step) => {
+
+            let description = step.name ? `On ${step.name}` : 'Continue';
+
+            if (step.maneuver) {
+              switch (step.maneuver.type) {
+                case 'merge':
+                  description += ` and merge ${step.maneuver.modifier}`;
+                  break;
+                case 'off ramp':
+                  description += ` and take the off-ramp ${step.maneuver.modifier}`;
+                  break;
+                case 'fork':
+                  description += ` and take the fork ${step.maneuver.modifier}`;
+                  break;
+                case 'turn':
+                  description += ` and turn ${step.maneuver.modifier}`;
+                  break;
+                case 'new name':
+                  description += ` and continue onto ${step.name}`;
+                  break;
+                default:
+                  description += ` and continue ${step.maneuver.modifier}`;
+              }
+            }
+            if (step.exits) {
+              description += ` towards exit ${step.exits}`;
+            }
+
+            return {
+              description,
+              coordinates: {
+                lat: step.maneuver.location[1],
+                lon: step.maneuver.location[0],
+              },
+              distance: step.distance,
+            };
+          });
+
+          // Cache the response
+          memcached.set(cacheKey, formattedSteps, 120, (err) => {  // Cache for 120 seconds
+            if(err) console.error('Memcached Error:', err);
+          });
+
+          res.json(formattedSteps);
+        });
+      }
+    });
+  } catch (error) {
+    console.error('Error:', error);
+    res.status(500).json({ error: 'An internal server error occurred' });
+  }
+});
+
+
+// Convert Endpoint
+app.post('/convert', (req, res) => {
+  const { lat, long, zoom } = req.body;
+  
+  // Calculate tile indices
+  const x_tile = Math.floor((long + 180) / 360 * Math.pow(2, zoom));
+  const y_tile = Math.floor((1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, zoom));
+
+  // Send response
+  res.json({ x_tile, y_tile });
+});
+
+//TODO: MOVE TO WORKER SERVER
 app.post('/api/search', async (req, res) => {
   try {
     const { minLat, minLon, maxLat, maxLon } = req.body.bbox;
     const onlyInBox = req.body.onlyInBox;
     const searchTerm = req.body.searchTerm;
 
-    const query = `
+    /*const query = `
+  SELECT 
+    (tags -> 'addr:housenumber') AS number,
+    (tags -> 'addr:street') AS street,
+    (tags -> 'addr:city') AS city,
+    (tags -> 'addr:state') AS state,
+    (tags -> 'addr:country') AS country
+  FROM 
+    planet_osm_polygon
+  WHERE 
+    tags ? 'addr:street'
+    AND ST_DWithin(ST_Transform(way, 4326), ST_SetSRID(ST_Point($1, $2), 4326), 1000)
+  ORDER BY 
+    ST_Transform(way, 4326) <-> ST_SetSRID(ST_Point($1, $2), 4326)
+  LIMIT 1;
+`;*/
+
+  /*const query = `
     WITH bbox AS (
       SELECT
         CAST($1 AS FLOAT8) AS min_lon,
@@ -238,8 +398,7 @@ app.post('/api/search', async (req, res) => {
         CAST($3 AS FLOAT8) AS max_lon,
         CAST($4 AS FLOAT8) AS max_lat
     )
-    SELECT
-      osm_id,
+    SELECT osm_id,
       name,
       ST_AsText(ST_Centroid(ST_Transform(ST_Intersection(ST_TRANSFORM(way, 4326), ST_MakeEnvelope(min_lon, min_lat, max_lon, max_lat, 4326)), 4326))) AS coordinates,
       ST_AsText(ST_Transform(ST_Envelope(ST_Intersection(ST_TRANSFORM(way, 4326), ST_MakeEnvelope(min_lon, min_lat, max_lon, max_lat, 4326))), 4326)) AS bbox
@@ -254,10 +413,77 @@ app.post('/api/search', async (req, res) => {
         $6 = false OR
         ST_Contains(ST_MakeEnvelope(min_lon, min_lat, max_lon, max_lat, 4326), ST_Transform(way, 4326))
       )
-   
-      `; 
- // ORDER BY
-    //   ST_Distance(ST_Transform(way, 4326), ST_Centroid(ST_MakeEnvelope(min_lon, min_lat, max_lon, max_lat, 4326))) ASC;
+
+      `;*/
+    /*const query = `
+    WITH bbox AS ( 
+    SELECT
+        CAST($1 AS FLOAT8) AS min_lon,
+        CAST($2 AS FLOAT8) AS min_lat,
+        CAST($3 AS FLOAT8) AS max_lon,
+        CAST($4 AS FLOAT8) AS max_lat
+    )
+    SELECT
+      osm_id,
+      name,
+      CASE WHEN $6 = true THEN
+          ST_AsText(ST_Centroid(ST_Intersection(ST_TRANSFORM(way, 4326), ST_MakeEnvelope(min_lon, min_lat, max_lon, max_lat, 4326))))
+        ELSE ST_AsText(ST_Centroid(ST_Transform(way, 4326)))
+      END AS coordinates,
+      CASE WHEN $6 = true THEN
+          ST_AsText(ST_Envelope(ST_Intersection(ST_TRANSFORM(way, 4326), ST_MakeEnvelope(min_lon, min_lat, max_lon, max_lat, 4326))))
+        ELSE ST_AsText(ST_MakeEnvelope(min_lon, min_lat, max_lon, max_lat, 4326))
+      END AS bbox
+    FROM
+      planet_osm_polygon,
+      bbox
+    WHERE
+      name ILIKE $5
+      AND (
+        $6 = false OR
+        ST_Contains(ST_MakeEnvelope(min_lon, min_lat, max_lon, max_lat, 4326), ST_Transform(way, 4326))
+    )
+  `;*/
+    const query = `
+    WITH bbox AS (
+      SELECT
+        CAST($1 AS FLOAT8) AS min_lon,
+        CAST($2 AS FLOAT8) AS min_lat,
+        CAST($3 AS FLOAT8) AS max_lon,
+        CAST($4 AS FLOAT8) AS max_lat
+    )
+    SELECT
+      osm_id,
+      name,
+      ST_AsText(ST_Centroid(ST_Transform(way, 4326))) AS coordinates,
+      ST_AsText(ST_MakeEnvelope(bbox.min_lon, bbox.min_lat, bbox.max_lon, bbox.max_lat, 4326)) AS bbox
+    FROM
+      (
+        SELECT osm_id, name, way
+        FROM planet_osm_polygon, bbox
+        WHERE name ILIKE $5
+          AND (
+            $6 = false OR
+            ST_Contains(ST_MakeEnvelope(bbox.min_lon, bbox.min_lat, bbox.max_lon, bbox.max_lat, 4326), ST_Transform(way, 4326))
+          )
+        UNION ALL
+        SELECT osm_id, name, way
+        FROM planet_osm_point, bbox
+        WHERE name ILIKE $5
+          AND (
+            $6 = false OR
+            ST_Contains(ST_MakeEnvelope(bbox.min_lon, bbox.min_lat, bbox.max_lon, bbox.max_lat, 4326), ST_Transform(way, 4326))
+          )
+        UNION ALL
+        SELECT osm_id, name, way
+        FROM planet_osm_line, bbox
+        WHERE name ILIKE $5
+          AND (
+            $6 = false OR
+            ST_Contains(ST_MakeEnvelope(bbox.min_lon, bbox.min_lat, bbox.max_lon, bbox.max_lat, 4326), ST_Transform(way, 4326))
+          )
+      ) AS combined_data, bbox;
+  `;
     const result = await pool.query(query, [
       minLon,
       minLat,
@@ -286,8 +512,6 @@ app.post('/api/search', async (req, res) => {
         }
       };
     });
-    
-
     res.json(responseData);
   } catch (error) {
     console.error('Error:', error);
@@ -295,91 +519,66 @@ app.post('/api/search', async (req, res) => {
   }
 });
 
-// Convert Endpoint
-app.post('/convert', (req, res) => {
-  const { lat, long, zoom } = req.body;
-  
-  // Calculate tile indices
-  const x_tile = Math.floor((long + 180) / 360 * Math.pow(2, zoom));
-  const y_tile = Math.floor((1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, zoom));
 
-  // Send response
-  res.json({ x_tile, y_tile });
-});
 
-app.post('/api/route', async (req, res) => {
+app.post('/api/address', async (req, res) => {
+  console.log("Fetching address")
+  const { lat, lon } = req.body;
+
+  if (!lat || !lon) {
+    return res.status(400).json({ error: 'Latitude and longitude are required.' });
+  }
+
+  const query = `
+    WITH closest_address AS (
+      SELECT 
+        "addr:housenumber",
+        tags -> 'addr:street' AS street,
+        tags -> 'addr:city' AS city,
+        tags -> 'addr:state' AS state,
+        ST_Distance(ST_Transform(way, 4326), ST_GeogFromText('POINT(${lon} ${lat})')) AS distance
+      FROM 
+        planet_osm_point
+      WHERE 
+        tags ? 'addr:street'
+      AND 
+        ST_DWithin(ST_Transform(way, 4326), ST_GeogFromText('POINT(${lon} ${lat})'), 1000)
+      UNION ALL
+      SELECT 
+        "addr:housenumber",
+        tags -> 'addr:street' AS street,
+        tags -> 'addr:city' AS city,
+        tags -> 'addr:state' AS state,
+        ST_Distance(ST_Transform(way, 4326), ST_GeogFromText('POINT(${lon} ${lat})')) AS distance
+      FROM 
+        planet_osm_polygon
+      WHERE 
+        tags ? 'addr:street'
+      AND 
+        ST_DWithin(ST_Transform(way, 4326), ST_GeogFromText('POINT(${lon} ${lat})'), 1000)
+    )
+    SELECT 
+      "addr:housenumber", street, city, state
+    FROM 
+      closest_address
+    ORDER BY 
+      distance
+    LIMIT 1;
+  `;
+
   try {
-    const username = await redisGet(`session:${req.sessionID}`);
-    if (!username) {
-      return res.status(401).json({ error: 'Unauthorized. Please login first.' });
+    const result = await pool.query(query);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'No address found for the provided location.' });
     }
 
-    const { source, destination } = req.body;
-
-    if (!source || !destination || !source.lat || !source.lon || !destination.lat || !destination.lon) {
-      return res.status(400).json({ error: 'Invalid request. Missing source or destination coordinates.' });
-    }
-
-    const url = `http://209.151.152.129:5000/route/v1/driving/${source.lon},${source.lat};${destination.lon},${destination.lat}?steps=true`;
-
-    request(url, { json: true }, (error, response, body) => {
-      if (error) {
-        console.error('Error:', error);
-        return res.status(500).json({ error: 'An error occurred while fetching the route.' });
-      }
-
-      if (response.statusCode !== 200) {
-        console.error('OSRM API Error:', body);
-        return res.status(500).json({ error: 'An error occurred while fetching the route.' });
-      }
-
-      console.log(JSON.stringify(body.routes[0].legs[0].steps, null, 2));
-
-      const route = body.routes[0];
-      const steps = route.legs[0].steps;
-
-      const formattedSteps = steps.map((step) => {
-
-        let description = step.name ? `On ${step.name}` : 'Continue';
-        
-        if (step.maneuver) {
-          switch (step.maneuver.type) {
-            case 'merge':
-              description += ` and merge ${step.maneuver.modifier}`;
-              break;
-            case 'off ramp':
-              description += ` and take the off-ramp ${step.maneuver.modifier}`;
-              break;
-            case 'fork':
-              description += ` and take the fork ${step.maneuver.modifier}`;
-              break;
-            case 'turn':
-              description += ` and turn ${step.maneuver.modifier}`;
-              break;
-            case 'new name':
-              description += ` and continue onto ${step.name}`;
-              break;
-            default:
-              description += ` and continue ${step.maneuver.modifier}`;
-          }
-        }
-        if (step.exits) {
-          description += ` towards exit ${step.exits}`;
-        }
-
-        return {
-          description,
-          coordinates: {
-            lat: step.maneuver.location[1],
-            lon: step.maneuver.location[0],
-          },
-          distance: step.distance,
-        };
-      });
-      // res.setHeader('Content-Type', 'application/json');
-      // res.status(200).send(JSON.stringify(formattedSteps));
-
-      res.json(formattedSteps);
+    const address = result.rows[0];
+    res.json({
+      number: address["addr:housenumber"] || 'N/A',
+      street: address.street || 'N/A',
+      city: address.city || 'N/A',
+      state: address.state || 'N/A',
+      country: 'USA'
     });
   } catch (error) {
     console.error('Error:', error);
@@ -387,22 +586,17 @@ app.post('/api/route', async (req, res) => {
   }
 });
 
-app.get('/turn/:TL/:BR.png', async (req, res) => {
-  try {
-    // Extract coordinates from request parameters
-    const { TL, BR } = req.params;
-    const [TL_lat, TL_lon] = TL.split(',');
-    const [BR_lat, BR_lon] = BR.split(',');
-
-    // const url = `http://209.151.152.129:1234/?/${source.lon},${source.lat};${destination.lon},${destination.lat}?steps=true`;
 
 
-    return res.status(200).json({msg: "This is tepmorary"})
-  }catch (error) {
-    console.error('Error:', error);
-    res.status(500).json({ error: 'An internal server error occurred' });
-  }
-})
+// TODO: uncomment this when things are finished implementing
+// app.post('/api/search', cacheMiddleware, async (req, res) => {
+//   request(`${NGINX_URL}/postgis/api/search`).pipe(res);
+// })
+
+// app.post('/api/address', async (req, res) => {
+//   request(`${NGINX_URL}/postgis/api/address`).pipe(res);
+// })
+
 
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'frontend/build', 'index.html'));
