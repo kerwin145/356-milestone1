@@ -53,7 +53,7 @@ const transporter = nodemailer.createTransport({
     }
 });
 
-const memcached = new Memcached('localhost:11211');
+const memcached = new Memcached('127.0.0.1:11211');
 
 //middleware
 app.use(bodyParser.json())
@@ -68,7 +68,7 @@ app.use(session({
  app.use(function(req, res, next) {
 //   console.log("================DEBUGGING REQUESTS================")
 //   console.log("\n\n__________URL_____________")
-   console.log("\n\n" + req.protocol + '://' + req.get('host') + req.originalUrl)
+      //  console.log("\n\n" + req.protocol + '://' + req.get('host') + req.originalUrl)
 //   console.log("\n\n___________QUERY___________")
 //   console.log(req.query)
 //   console.log("\n\n___________BODY___________")
@@ -221,17 +221,18 @@ planet_osm_polygon
 planet_osm_roads
 */
 function handleImageResponseAndCache(response, key, res) {
-  // console.log("handling image response and cache")
   if (response.statusCode === 200) {
-    let imageData = Buffer.from('');
+    const chunks = [];
     response.on('data', (chunk) => {
-      imageData = Buffer.concat([imageData, chunk]);
+      chunks.push(chunk);
     });
     response.on('end', () => {
-      memcached.set(key, imageData, 60, (err) => {  // Cache for 6t0 seconds
-        if(err) console.error(err);
+      const imageData = Buffer.concat(chunks);
+      memcached.set(key, imageData, 6000, (err) => {  // Cache for 6000 seconds
+        if (err) console.error(err);
       });
-      res.contentType('image/png').send(imageData);
+      res.writeHead(200, { 'Content-Type': 'image/png' });
+      res.end(imageData);
     });
   } else {
     res.status(response.statusCode).send(response.statusMessage);
@@ -243,9 +244,11 @@ app.get('/tiles/:layer/:v/:h.png', cacheMiddleware, (req, res) => {
   const { layer, v, h } = req.params;
   const key = `/tiles/${layer}/${v}/${h}.png`;
 
-  request(`${NGINX_URL}/tile/${layer}/${v}/${h}.png`).on('response', (response) => {
-    handleImageResponseAndCache(response, key, res);
-  });
+  const url = `${NGINX_URL}/tile/${layer}/${v}/${h}.png`;
+  request(url)
+    .on('response', (response) => {
+      handleImageResponseAndCache(response, key, res);
+  })
   // request(`${NGINX_URL}/tile/${layer}/${v}/${h}.png`).pipe(res);
 })
 
@@ -339,7 +342,7 @@ app.post('/api/route', async (req, res) => {
           });
 
           // Cache the response
-          memcached.set(cacheKey, formattedSteps, 120, (err) => {  // Cache for 120 seconds
+          memcached.set(cacheKey, formattedSteps, 6000, (err) => {  // Cache for 100 minutes
             if(err) console.error('Memcached Error:', err);
           });
 
@@ -589,7 +592,7 @@ app.post('/api/address', async (req, res) => {
 
 
 // TODO: uncomment this when things are finished implementing
-// app.post('/api/search', cacheMiddleware, async (req, res) => {
+// app.post('/api/search', async (req, res) => {
 //   request(`${NGINX_URL}/postgis/api/search`).pipe(res);
 // })
 
