@@ -64,6 +64,7 @@ http {
 }
 
 ========================================== routing.conf ============================================
+# In sites-available. Will also need a symbolic link from sites-enabled pointing to routing.conf
 
 server {
     listen 8080;

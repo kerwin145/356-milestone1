@@ -35,6 +35,7 @@ const redisHGet= promisify(redisClient.hmget).bind(redisClient);
 const redisHSet = promisify(redisClient.hset).bind(redisClient);
 const redisExists = promisify(redisClient.exists).bind(redisClient);
 
+//-----VVVV will be removed
 const pool = new Pool({
     user: 'renderer',
     host: '209.151.152.129',
@@ -42,6 +43,7 @@ const pool = new Pool({
     password: 'renderer',
     port: 5432,
   });
+//-----^^^^ 
 
 const transporter = nodemailer.createTransport({
     // host: `${process.env.HOST}`,
@@ -392,8 +394,7 @@ app.post('/api/search', async (req, res) => {
     ST_Transform(way, 4326) <-> ST_SetSRID(ST_Point($1, $2), 4326)
   LIMIT 1;
 `;*/
-
-  /*const query = `
+    /*const query = `
     WITH bbox AS (
       SELECT
         CAST($1 AS FLOAT8) AS min_lon,
@@ -521,8 +522,6 @@ app.post('/api/search', async (req, res) => {
     res.status(500).json({ error: 'An internal server error occurred' });
   }
 });
-
-
 
 app.post('/api/address', async (req, res) => {
   console.log("Fetching address")
